@@ -23,12 +23,15 @@
 
 #define MSG_BUFFER_SIZE 4096
 
+#define TO_ALL "all"
+
 void* client_handler(void*);
 void login_handler(int);
 void register_handler(int);
 void chat_handler(int);
 
 int client_sockets[10];
+char* socket_to_user_map[20];
 int sock_count = 0;
 
 void run_server() {
@@ -103,11 +106,28 @@ void chat_handler(int socket) {
     char message[MSG_BUFFER_SIZE];
     int r_size;
     while((r_size = read(socket, message, MSG_BUFFER_SIZE)) > 0) {
-        printf("New message recieved!\n"); fflush(stdout);
-        for(int i=0;i<sock_count;i++){
-            if(client_sockets[i] == socket) continue;
-            //printf("sending message to socket %d\n",client_sockets[i]); fflush(stdout);
-            write(client_sockets[i], message, MSG_BUFFER_SIZE);   
+        
+        //check message receipients
+        char temp_msg[MSG_BUFFER_SIZE];
+        strcpy(temp_msg, message);
+        char* _ = strtok(temp_msg,",");
+        char* to = strtok(NULL,",");
+
+        if (strcmp(to,TO_ALL) == 0) {
+            printf("New group message recieved!\n"); fflush(stdout);
+            for(int i=0;i<sock_count;i++){
+                if(client_sockets[i] == socket) continue;
+                //printf("sending message to socket %d\n",client_sockets[i]); fflush(stdout);
+                write(client_sockets[i], message, MSG_BUFFER_SIZE);   
+            }
+        } else {
+            printf("New direct message recieved!\n"); fflush(stdout);
+            for(int i=0;i<20;i++){
+                if (socket_to_user_map[i] == NULL) continue;
+                if (strcmp(socket_to_user_map[i], to) == 0){
+                    write(i, message, MSG_BUFFER_SIZE);
+                }
+            }
         }
     }
     //printf("done handling chats\n"); fflush(stdout);
@@ -161,6 +181,9 @@ void login_handler(int socket){
 
     //printf("data: %s %s\n", user->pass, user->name); fflush(stdout);
     if (strcmp(password, user->pass) == 0) {
+        //map socket to user
+        socket_to_user_map[socket] = username;
+
         write(socket, OK, sizeof(OK));
     } else {
         write(socket, FAILED, sizeof(FAILED));
@@ -192,6 +215,9 @@ void register_handler(int socket) {
         write(socket, FAILED, sizeof(FAILED));
         return;
     }
+
+    // map socket to user
+    socket_to_user_map[socket] = username;
 
     fprintf(fptr,"%s,%s", name, password);
     fclose(fptr); 

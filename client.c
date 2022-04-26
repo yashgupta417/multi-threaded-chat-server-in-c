@@ -7,6 +7,7 @@
 #include <unistd.h> 
 #include <pthread.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 
 #define SERVER_PORT 8888
 #define MSG_BUFFER_SIZE 4096
@@ -22,6 +23,9 @@
 
 #define AES_KEY "e5d0b7a946f90680"
 #define AES_IV "0000000000000000"
+
+#define TO_ALL "all"
+#define MSG_TO_SEPARATOR '>'
 
 char client_username[20];
 
@@ -60,13 +64,13 @@ void create_dir(char* dir) {
 
 void sign_message(char* message_filename) {
     char command[1000];
-    sprintf(command, "openssl dgst -sha256 -sign ./%s/privatekey.pem -out ./%s/data.txt.signature %s",client_username, client_username, message_filename);
+    sprintf(command, "/bin/bash -c 'openssl dgst -sha256 -sign ./%s/privatekey.pem -out ./%s/data.txt.signature %s 2>/dev/null'",client_username, client_username, message_filename);
     system(command);
 }
 
 void verify_singature(char* sender, char* message_filename) {
     char command[1000];
-    sprintf(command, "openssl dgst -sha256 -verify ./%s/publickey.pem -signature ./%s/data.txt.signature %s >/dev/null", sender, sender, message_filename);
+    sprintf(command, "/bin/bash -c 'openssl dgst -sha256 -verify ./%s/publickey.pem -signature ./%s/data.txt.signature %s >/dev/null 2>/dev/null'", sender, sender, message_filename);
     int status = system(command);
 
     if(status == 1) {
@@ -74,21 +78,35 @@ void verify_singature(char* sender, char* message_filename) {
     }   
 }
 
-char* aes_encrypt(char* plaintext) {
-    char encryptCommand[600], pt_filename[200], cy_filename[200];
+char* encrypt(char* plaintext, char* to) {
+    char encryptCommand[600], pt_filename[200], cy_filename[200], temp_filename[200];
 
     create_dir(client_username);
     sprintf(pt_filename,"./%s/plaintext.txt",client_username);
     sprintf(cy_filename,"./%s/cypher.txt",client_username);
+    sprintf(temp_filename,"./%s/temp.txt",client_username);
     
     //writing plaintext to file
     char echoCommand[300];
-    sprintf(echoCommand, "echo %s > %s", plaintext, pt_filename);
+    sprintf(echoCommand, "echo '%s' > %s", plaintext, pt_filename);
     system(echoCommand);
 
     //encrypting
-    sprintf(encryptCommand, "openssl enc -des-cbc -in %s -out %s -nosalt -iv %s -K %s -a", pt_filename, cy_filename, AES_IV, AES_KEY);
-    system(encryptCommand);
+    if (strcmp(to, TO_ALL) == 0) {
+        //DES encryption for group messages
+        //printf("des\n");
+        sprintf(encryptCommand, "/bin/bash -c 'openssl enc -des-cbc -in %s -out %s -nosalt -iv %s -K %s -a 2>/dev/null'", pt_filename, cy_filename, AES_IV, AES_KEY);
+        system(encryptCommand);
+    } else {
+        //RSA encryption for direct messages
+        //printf("rsa\n");
+        sprintf(encryptCommand, "/bin/bash -c 'openssl rsautl -encrypt -in %s -out %s -pubin -inkey ./%s/publickey.pem 2>/dev/null'", pt_filename, cy_filename, to);
+        system(encryptCommand);
+
+        // sprintf(encryptCommand, "xxd -ps %s > %s",temp_filename, cy_filename);
+        // system(encryptCommand);
+    }
+    //printf("%s\n", encryptCommand);
 
     //read cypher from file
     FILE* cy_file = fopen(cy_filename,"r");
@@ -106,7 +124,7 @@ char* aes_encrypt(char* plaintext) {
     return cypher;
 }
 
-char* aes_decrypt(char* cypher) {
+char* decrypt(char* cypher, bool is_direct, char* from) {
     char decryptCommand[600], dt_filename[200], cy_filename[200];
     
     create_dir(client_username);
@@ -115,12 +133,25 @@ char* aes_decrypt(char* cypher) {
 
     //writing cypher to file
     char echoCommand[300];
-    sprintf(echoCommand, "echo %s > %s", cypher, cy_filename);
+    sprintf(echoCommand, "echo '%s' > %s", cypher, cy_filename);
     system(echoCommand);
 
     //decrypting
-    sprintf(decryptCommand, "openssl enc -d -des-cbc -in %s -out %s -nosalt -iv %s -K %s -a", cy_filename, dt_filename, AES_IV, AES_KEY);
-    system(decryptCommand);
+    if (!is_direct) {
+        //using DES for group messages
+        //printf("dec\n");
+        sprintf(decryptCommand, "/bin/bash -c 'openssl enc -d -des-cbc -in %s -out %s -nosalt -iv %s -K %s -a 2>/dev/null'", cy_filename, dt_filename, AES_IV, AES_KEY);
+        system(decryptCommand);
+    } else {
+        //using RSA for direct messages
+        //printf("rsa\n");
+
+        sprintf(cy_filename,"./%s/cypher.txt", from); //todo: fix this
+        sprintf(decryptCommand, "/bin/bash -c 'openssl rsautl -decrypt -in %s -out %s -inkey ./%s/privatekey.pem 2>/dev/null'", cy_filename, dt_filename, client_username);
+        system(decryptCommand);
+    }
+    //printf("%s\n %s\n", cypher, decryptCommand);
+
 
     //read cypher from file
     FILE* dt_file = fopen(dt_filename,"r");
@@ -148,8 +179,22 @@ void* listen_messages(void* sock_){
     while((r_size = read(sock, message, MSG_BUFFER_SIZE)) > 0) {
         if(r_size != MSG_BUFFER_SIZE) continue;
         
-        char* dec_message = aes_decrypt(message);
-        printf("%s\n", dec_message); fflush(stdout);
+        //check message receipients
+        char temp_msg[MSG_BUFFER_SIZE];
+        strcpy(temp_msg, message);
+        char* text = strtok(temp_msg,",");
+        char* to = strtok(NULL,",");
+        char* from = strtok(NULL,",");
+        bool is_direct = (strcmp(to, TO_ALL) == 0 ? false : true);
+        //printf("%s %s %s\n", text, to, from);
+
+        char* dec_message = decrypt(text, is_direct, from);
+
+        char* dec_text = strtok(dec_message,">");
+        if(strcmp(to, TO_ALL) != 0){
+            strcat(dec_text," [PRIVATE]");
+        }
+        printf("%s\n", dec_text); fflush(stdout);
 
         free(dec_message);
     }
@@ -182,8 +227,20 @@ void chat_room(int sock) {
 
         sprintf(message,"%s: %s", client_username, text);
 
-        //encrypt and send message
-        char* enc_message = aes_encrypt(message);
+        //check type of message
+        char temp_msg[MSG_BUFFER_SIZE];
+        strcpy(temp_msg, text);
+        char* to = strrchr(temp_msg, MSG_TO_SEPARATOR);
+        to = to ? to + 1 : TO_ALL;
+
+        //encrypting and sending message
+        char* enc_message = encrypt(message, to);
+        strcat(enc_message, ",");
+        strcat(enc_message, to);
+        strcat(enc_message,",");
+        strcat(enc_message,client_username);
+
+        //printf("%s\n",enc_message);
         write(sock, enc_message, MSG_BUFFER_SIZE);
         
         free(enc_message);

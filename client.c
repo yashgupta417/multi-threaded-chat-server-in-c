@@ -58,6 +58,22 @@ void create_dir(char* dir) {
     }
 }
 
+void sign_message(char* message_filename) {
+    char command[1000];
+    sprintf(command, "openssl dgst -sha256 -sign ./%s/privatekey.pem -out ./%s/data.txt.signature %s",client_username, client_username, message_filename);
+    system(command);
+}
+
+void verify_singature(char* sender, char* message_filename) {
+    char command[1000];
+    sprintf(command, "openssl dgst -sha256 -verify ./%s/publickey.pem -signature ./%s/data.txt.signature %s >/dev/null", sender, sender, message_filename);
+    int status = system(command);
+
+    if(status == 1) {
+        printf("[Warning] Signature verification failed\n");
+    }   
+}
+
 char* aes_encrypt(char* plaintext) {
     char encryptCommand[600], pt_filename[200], cy_filename[200];
 
@@ -80,6 +96,9 @@ char* aes_encrypt(char* plaintext) {
     fgets(cypher, MSG_BUFFER_SIZE, cy_file);
     cypher[strcspn(cypher, "\n")] = 0;
     fclose(cy_file);
+
+    //perform digital signature
+    sign_message(cy_filename);
 
     //remove(pt_filename);
     //remove(cy_filename);
@@ -113,6 +132,12 @@ char* aes_decrypt(char* cypher) {
     //remove(dt_filename);
     //remove(cy_filename);
 
+    //verify signature
+    char temp_text[MSG_BUFFER_SIZE];
+    strcpy(temp_text, dec_text);
+    char* sender = strtok(temp_text,":");
+    verify_singature(sender, cy_filename);
+
     return dec_text;
 }
 
@@ -121,7 +146,8 @@ void* listen_messages(void* sock_){
     char message[MSG_BUFFER_SIZE];
     int r_size;
     while((r_size = read(sock, message, MSG_BUFFER_SIZE)) > 0) {
-        //printf("r_size = %d, msg = %s\n", r_size, message);
+        if(r_size != MSG_BUFFER_SIZE) continue;
+        
         char* dec_message = aes_decrypt(message);
         printf("%s\n", dec_message); fflush(stdout);
 
@@ -162,6 +188,19 @@ void chat_room(int sock) {
         
         free(enc_message);
     }
+}
+
+void generateRSAKeys(char* username) {
+    char command[200];
+    create_dir(username);
+
+    //generating private key
+    sprintf(command, "openssl genrsa -out ./%s/privatekey.pem 2048", username);
+    system(command);
+
+    //generating public key
+    sprintf(command, "openssl rsa -in ./%s/privatekey.pem -outform PEM -pubout -out ./%s/publickey.pem", username, username);
+    system(command);
 }
 
 int menu(int sock) {
@@ -217,6 +256,7 @@ int menu(int sock) {
         if(strcmp(response, OK) == 0){
             printf("Registration sucessfull.\n");
             strcpy(client_username, username);
+            generateRSAKeys(username);
             return 1;
         }else {
             printf("Username might already exists, please try changing it.\n");
